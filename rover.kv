@@ -1,0 +1,157 @@
+<Controller>:
+    canvas:
+        Color:
+            rgba: 1, 1, 1, 0.1
+        Rectangle:
+            pos:self.pos
+            size:self.size
+
+<Throttle>:
+    canvas:
+        Color:
+            rgba: 1, 0.5, 0, 1
+        Ellipse:
+            pos: self.pos
+            size: self.size
+
+<StatusBL>:
+    orientation: 'horizontal'
+    canvas.before:
+        Color:
+            rgba: 0, 0.5, 0, 1
+        Rectangle:
+            pos:self.pos
+            size:self.size
+
+<MainBoard>:
+    id: main_board
+    driving_wheel: wheel_controller
+    accelleration: accell_controller
+    cmd_sender: command_sender
+    
+    BoxLayout:
+        size: root.size
+        orientation: 'horizontal'
+
+        Widget:
+            size_hint: 0.1, 1
+
+        BoxLayout:
+            orientation: 'vertical'
+            size_hint: 0.15, 1
+
+            Widget:
+                size_hint: 1, 0.2
+
+            Wheel_Controller:
+                id: wheel_controller
+                throttle: wheel_throttle
+                main_board: main_board
+
+                size_hint: 1, 1
+
+                Throttle:
+                    id: wheel_throttle
+
+                    size: wheel_controller.width, wheel_controller.width
+                    x: wheel_controller.x
+                    center_y: wheel_controller.center_y
+
+            Label:
+                size_hint: 1, 0.2
+                text: str(wheel_controller.value)
+                valign: 'bottom'
+
+        BoxLayout:
+            size_hint: 1, 1
+            orientation: 'vertical'
+
+            BoxLayout:
+                size_hint: 1, 0.2
+                orientation: 'horizontal'
+
+                spacing: 10
+                padding: 20
+
+                StatusBL:
+                    size_hint: 1, 1
+                    id: battery_status
+                    label: battery_status_label
+
+                    Label:
+                        size_hint: 0.6, 1
+                        text: 'battery: '
+                    Label:
+                        id: battery_status_label
+                        size_hint: 1, 1
+                        text: ''
+
+                CommandSenderBL:
+                    id:command_sender
+
+                    size_hint: 1, 1
+                    orientation: 'horizontal'
+
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0.5, 0, 1
+                        Rectangle:
+                            pos:self.pos
+                            size:self.size
+
+                    label: connection_status_label
+
+                    Label:
+                        size_hint: 0.6, 1
+                        text: 'connection: '
+                    Label:
+                        id: connection_status_label
+                        size_hint: 1, 1
+                        text: 'OK'
+                
+            Widget:
+                size_hint: 1, 1
+
+            BoxLayout:
+                size_hint: 1, 0.2
+                orientation: 'horizontal'
+
+                Label:
+                    size_hint: 0.2, 1
+                    text: '%s' % int(trim_wheel.value)
+
+                Slider:
+                    size_hint: 1, 1
+                    orientation: 'horizontal'
+                    id: trim_wheel
+                    min: -100
+                    max: 100
+                    value: 0
+
+        BoxLayout:
+            size_hint: 0.15, 1
+            orientation: 'vertical'
+
+            Widget:
+                size_hint: 1, 0.2
+
+            Accell_Controller:
+                id: accell_controller
+                throttle: accell_controller_throttle
+                main_board: main_board
+
+                size_hint: 1, 1
+
+                Throttle:
+                    id: accell_controller_throttle
+
+                    size: accell_controller.width, accell_controller.width
+                    x: accell_controller.x
+                    center_y: accell_controller.center_y
+
+            Label:
+                size_hint: 1, 0.2
+                text: str(accell_controller.value)
+
+        Widget:
+            size_hint: 0.1, 1
