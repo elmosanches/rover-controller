@@ -9,9 +9,121 @@ from kivy.network.urlrequest import UrlRequest
 from kivy.uix.boxlayout import BoxLayout
 from kivy.graphics import Color, Rectangle
 
+from kivy.support import install_twisted_reactor
+install_twisted_reactor()
+
+from twisted.internet import reactor
+
+from twisted.protocols.basic import LineReceiver
+from twisted.internet.protocol import ClientFactory
+
 
 DRIVING_WHEEL_MAX = 100
 ACCELLERATOR_MAX = 100
+
+SERVER_HOST = 'localhost'
+SERVER_PORT = 8123
+CONTROLLER_NAME = 'kivy_ctrl01'
+
+
+class EchoClient(LineReceiver):
+    def connectionMade(self):
+        print "connection made"
+        self.factory.connect_protocol(self)
+
+    def lineReceived(self, line):
+        self.factory.line_received(line)
+
+
+
+class EchoFactory(ClientFactory):
+    protocol = EchoClient
+
+    def __init__(self, endpoint_communication_bl):
+        self.ec_bl = endpoint_communication_bl
+
+    def clientConnectionLost(self, conn, reason):
+        print "connection lost"
+
+    def clientConnectionFailed(self, conn, reason):
+        print "connection failed"
+
+    def connect_protocol(self, protocol):
+        self.ec_bl.on_connection(protocol)
+
+    def line_received(self, line):
+        self.ec_bl.protocol_line_received(line)
+
+
+class EndpointCommunicationBL(BoxLayout):
+
+    DISCONNECTED = 0
+    CONNECTED_TO_SERVER = 1
+    CONNECTED_TO_ENDPOINT = 2
+
+    con_widget = ObjectProperty(None)
+    bat_widget = ObjectProperty(None)
+
+    def __init__(self, *args, **kwargs):
+        super(EndpointCommunicationBL, self).__init__(*args, **kwargs)
+
+        self.con_state = self.DISCONNECTED
+
+    def connect(self):
+        reactor.connectTCP(SERVER_HOST, SERVER_PORT, EchoFactory(self))
+
+    def on_connection(self, protocol):
+        self.protocol = protocol
+        self.protocol.sendLine('CC:' + CONTROLLER_NAME)
+        self.con_state = self.CONNECTED_TO_SERVER
+
+    def protocol_line_received(self, line):
+        print "line received: {}".format(line)
+
+        header = line[:2]
+        body = line[3:]
+
+        if header == 'DL':
+            #@TODO
+            #handle available devices list
+            pass
+        elif header == 'CD':
+            #@TODO
+            #handle connecting endpoint result
+            pass
+        elif header == 'DD':
+            #@TODO
+            #handle device disconected
+            pass
+        elif header == 'RE':
+            self.endpoint_request_received(body)
+        elif header == 'SE':
+            #@TODO
+            #handle error
+            pass
+        else:
+            #@TODO
+            #handle undefined command
+            pass
+
+    def endpoint_request_received(self, request_body):
+        r_id, status, result = request_body.split(':')
+        if status > 0:
+            if r_id > 0:
+                self.process_success_response(r_id, result)
+            else:
+                self.process_success_unbound_response(result)
+        else:
+            if r_id > 0:
+                self.process_error_response(r_id, result)
+            else:
+                self.process_error_unbound_response(result)
+
+    def command_wheel(self, value):
+        print "command wheel value: {}".format(value)
+
+    def command_accell(self, value):
+        print "command accell value: {}".format(value)
 
 
 class StatusBL(BoxLayout):
@@ -124,6 +236,10 @@ class CommandSenderBL(BoxLayout):
         self.label.text = 'OK'
 
 
+class UtilityBL(BoxLayout):
+    pass
+
+
 class Throttle(Widget):
     pass
 
@@ -187,19 +303,23 @@ class Accell_Controller(Controller):
 class MainBoard(Widget):
     driving_wheel = ObjectProperty(None)
     accelleration = ObjectProperty(None)
-    cmd_sender = ObjectProperty(None)
+    endpoint_conn = ObjectProperty(None)
+
+    def connect_to_server(self):
+        self.endpoint_conn.connect()
 
     def update_wheel(self, value):
-        self.cmd_sender.command_wheel(value)
-
+        self.endpoint_conn.command_wheel(value)
 
     def update_accell(self, value):
-        self.cmd_sender.command_accell(value)
+        self.endpoint_conn.command_accell(value)
 
 
 class RoverApp(App):
     def build(self):
         main_board = MainBoard()
+        main_board.connect_to_server()
+
         return main_board
 
 
