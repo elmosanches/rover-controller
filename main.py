@@ -4,9 +4,11 @@ import json
 from kivy.app import App
 from kivy.uix.widget import Widget
 from kivy.uix.button import Button
+from kivy.uix.label import Label
 from kivy.properties import NumericProperty, ObjectProperty
 from kivy.network.urlrequest import UrlRequest
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.stacklayout import StackLayout
 from kivy.graphics import Color, Rectangle
 
 from kivy.support import install_twisted_reactor
@@ -26,7 +28,7 @@ SERVER_PORT = 8123
 CONTROLLER_NAME = 'kivy_ctrl01'
 
 
-class EchoClient(LineReceiver):
+class EndpointClient(LineReceiver):
     def connectionMade(self):
         print "connection made"
         self.factory.connect_protocol(self)
@@ -36,17 +38,21 @@ class EchoClient(LineReceiver):
 
 
 
-class EchoFactory(ClientFactory):
-    protocol = EchoClient
+class EndpointFactory(ClientFactory):
+    protocol = EndpointClient
 
     def __init__(self, endpoint_communication_bl):
         self.ec_bl = endpoint_communication_bl
 
     def clientConnectionLost(self, conn, reason):
         print "connection lost"
+        self.ec_bl.on_connection_lost(reason)
+        conn.connect()
 
     def clientConnectionFailed(self, conn, reason):
         print "connection failed"
+        self.ec_bl.on_connection_failed(reason)
+        conn.connect()
 
     def connect_protocol(self, protocol):
         self.ec_bl.on_connection(protocol)
@@ -55,27 +61,42 @@ class EchoFactory(ClientFactory):
         self.ec_bl.protocol_line_received(line)
 
 
+#@TODO
+"""
+-healthcheck request
+-battery status
+"""
 class EndpointCommunicationBL(BoxLayout):
-
-    DISCONNECTED = 0
-    CONNECTED_TO_SERVER = 1
-    CONNECTED_TO_ENDPOINT = 2
 
     con_widget = ObjectProperty(None)
     bat_widget = ObjectProperty(None)
+    utility_lt = ObjectProperty(None)
+
+    available_endpoints = []
+    enpoint_is_connected = False
+    selected_device = None
+
+    rq_id = 1
 
     def __init__(self, *args, **kwargs):
         super(EndpointCommunicationBL, self).__init__(*args, **kwargs)
 
-        self.con_state = self.DISCONNECTED
-
     def connect(self):
-        reactor.connectTCP(SERVER_HOST, SERVER_PORT, EchoFactory(self))
+        reactor.connectTCP(SERVER_HOST, SERVER_PORT, EndpointFactory(self))
 
     def on_connection(self, protocol):
         self.protocol = protocol
         self.protocol.sendLine('CC:' + CONTROLLER_NAME)
-        self.con_state = self.CONNECTED_TO_SERVER
+
+        self.con_widget.update_status('YELLOW', 'server connected')
+
+    def on_connection_lost(self, reason):
+        self.con_widget.update_status('RED', 'no connection')
+        self.utility_lt.log_display(reason.getErrorMessage())
+
+    def on_connection_failed(self, reason):
+        self.con_widget.update_status('RED', 'no connection')
+        self.utility_lt.log_display(reason.getErrorMessage())
 
     def protocol_line_received(self, line):
         print "line received: {}".format(line)
@@ -86,11 +107,19 @@ class EndpointCommunicationBL(BoxLayout):
         if header == 'DL':
             #@TODO
             #handle available devices list
-            pass
+            if self.enpoint_is_connected:
+                self.save_available_endpoints(body)
+            else:
+                self.enpoint_connecting_process(body)
+
         elif header == 'CD':
-            #@TODO
-            #handle connecting endpoint result
-            pass
+            if body == 'OK':
+                self.enpoint_is_connected = True
+                self.utility_lt.reset()
+                self.con_widget.update_status('GREEN', self.selected_device)
+            else:
+                self.con_widget.update_status('RED', body)
+
         elif header == 'DD':
             #@TODO
             #handle device disconected
@@ -106,6 +135,23 @@ class EndpointCommunicationBL(BoxLayout):
             #handle undefined command
             pass
 
+    def save_available_endpoints(self, body):
+        if body:
+            self.available_endpoints = body.split(':')
+        else:
+            self.available_endpoints = []
+
+    def enpoint_connecting_process(self, body):
+
+        self.save_available_endpoints(body)
+        self.utility_lt.connecting_endpoint(
+            self.available_endpoints, self.on_select_device
+        )
+
+    def on_select_device(self, device):
+        self.protocol.sendLine('CD:' + device)
+        self.selected_device = device
+
     def endpoint_request_received(self, request_body):
         r_id, status, result = request_body.split(':')
         if status > 0:
@@ -119,11 +165,28 @@ class EndpointCommunicationBL(BoxLayout):
             else:
                 self.process_error_unbound_response(result)
 
+    def endpoint_request_received(self,body):
+        print "endpoint request received: ", body
+
     def command_wheel(self, value):
         print "command wheel value: {}".format(value)
 
+        value += 100
+        value *= 1024/200
+
+        self.protocol.sendLine('RE:1:{}:{}'.format(int(value), self.get_rq_id()))
+
     def command_accell(self, value):
         print "command accell value: {}".format(value)
+
+        value += 100
+        value /= 2
+
+        self.protocol.sendLine('RE:2:{}:{}'.format(int(value), self.get_rq_id()))
+
+    def get_rq_id(self):
+        self.rq_id += 1
+        return self.rq_id
 
 
 class StatusBL(BoxLayout):
@@ -132,112 +195,52 @@ class StatusBL(BoxLayout):
 
 class CommandSenderBL(BoxLayout):
 
-    endpoint = 'http://192.168.0.205:9999'
-
-    connection_status = False
-
-    #@TODO
-    def establish_connection(self):
-        #discover server
-        #retrieve configuration
-        #configure connection
-        pass
-
-    def get_jrpc_request(self, method, params):
-        """
-        {"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
-        """
-        request = {
-            'jsonrpc': '2.0',
-            'method': method,
-            'params': params,
-            'id': 1
-        }
-
-        return json.dumps(request)
-
-    def send_rpc_request(self, body):
-
-        headers = {
-            'Content-Type': 'application/json',
-        }
-
-        req = UrlRequest(
-            url=self.endpoint,
-            on_success=self._on_success,
-            on_redirect=self._on_redirect,
-            on_failure=self.on_failure,
-            on_error=self.on_error,
-            req_body=body,
-            req_headers=headers,
-            timeout=3,
-            method='POST',
-            debug=True,
-        )
-
-    def command_wheel(self, wheel_value):
-        rpc_request = self.get_jrpc_request('wheel', {'value': wheel_value})
-        self.send_rpc_request(rpc_request)
-
-    def command_accell(self, accell_value):
-        rpc_request = self.get_jrpc_request('accell', {'value': accell_value})
-        self.send_rpc_request(rpc_request)
-
-    def _on_success(self, request, result):
-        print result
-
-        try:
-            result = json.loads(result)
-        except Exception as e:
-            self.update_error('RESPONSE INVALID')
-            return
-
-        if 'result' not in result:
-
-            err_msg = 'UNKNOWN RESPONSE ERROR'
-
-            if 'error' in result:
-                if 'message' in result['error']:
-                    err_msg = 'REQUEST INVALID'
-
-            self.update_error(err_msg)
-
-            return
-
-        self.update_ok()
-
-    def _on_redirect(self, request, result):
-        self.update_error('REDIRECT ERROR')
-
-    def on_failure(self, request, result):
-        self.update_error('REQUEST FAILED')
-
-    def on_error(self, request, result):
-        self.update_error('REQUEST ERROR')
-
-    def update_error(self, err_msg):
+    def update_status(self, color, status_msg):
         with self.canvas.before:
-            Color(0.5, 0, 0, mode='rgba')
+            if color.upper() == 'RED':
+                Color(0.5, 0, 0, mode='rgba')
+            if color.upper() == 'GREEN':
+                Color(0, 0.5, 0, mode='rgba')
+            if color.upper() == 'YELLOW':
+                Color(0.9, 0.7, 0, mode='rgba')
             Rectangle(
                 pos=[self.x, self.y],
                 size=[self.width, self.height]
             )
 
-        self.label.text = err_msg
-
-    def update_ok(self):
-        with self.canvas.before:
-            Color(0, 0.5, 0, mode='rgba')
-            Rectangle(
-                pos=[self.x, self.y],
-                size=[self.width, self.height]
-            )
-
-        self.label.text = 'OK'
+        self.label.text = status_msg
 
 
-class UtilityBL(BoxLayout):
-    pass
+class UtilityLt(StackLayout):
+    def reset(self):
+        self.clear_widgets()
+        self.padding = [0, 0, 0, 0]
+        self.spacing = [0, 0]
+
+    def connecting_endpoint(self, available_endpoints, on_select_callback):
+        self.on_select_callback = on_select_callback
+        self.reset()
+
+        if not available_endpoints:
+            lbl = Label(text='no device available', size_hint=(1, 0.15))
+            self.add_widget(lbl)
+        else:
+            self.padding = [50, 5, 50, 5]
+            self.spacing = [0, 20]
+            lbl = Label(text='select device:', size_hint=(1, 0.15))
+            self.add_widget(lbl)
+            for device in available_endpoints:
+                btn = Button(text=device, size_hint=(1, 0.15))
+                btn.bind(on_press=self.on_press_select_device)
+                self.add_widget(btn)
+
+    def log_display(self, msg):
+        self.reset()
+        lbl = Label(text=msg, size_hint=(1, 1))
+        self.add_widget(lbl)
+
+    def on_press_select_device(self, instance):
+        self.on_select_callback(instance.text)
 
 
 class Throttle(Widget):

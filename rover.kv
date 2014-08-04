@@ -70,7 +70,7 @@
                 id: endpoint_conn
                 bat_widget: bat_status
                 con_widget: conn_status
-                utility_bl: utility_bl
+                utility_lt: utility_lt
 
                 size_hint: 1, 0.2
                 orientation: 'horizontal'
@@ -99,7 +99,7 @@
 
                     canvas.before:
                         Color:
-                            rgba: 0, 0.5, 0, 1
+                            rgba: 0.5, 0, 0, 1
                         Rectangle:
                             pos:self.pos
                             size:self.size
@@ -112,10 +112,10 @@
                     Label:
                         id: connection_status_label
                         size_hint: 1, 1
-                        text: 'OK'
+                        text: 'server not connected'
 
-            UtilityBL:
-                id: utility_bl
+            UtilityLt:
+                id: utility_lt
                 size_hint: 1, 1
 
             BoxLayout:
