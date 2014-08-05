@@ -1,4 +1,5 @@
 import time
+import datetime
 import json
 
 from kivy.app import App
@@ -10,6 +11,8 @@ from kivy.network.urlrequest import UrlRequest
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.stacklayout import StackLayout
 from kivy.graphics import Color, Rectangle
+from kivy.clock import Clock
+from kivy.logger import Logger
 
 from kivy.support import install_twisted_reactor
 install_twisted_reactor()
@@ -40,6 +43,7 @@ class EndpointClient(LineReceiver):
 
 class EndpointFactory(ClientFactory):
     protocol = EndpointClient
+    connector = None
 
     def __init__(self, endpoint_communication_bl):
         self.ec_bl = endpoint_communication_bl
@@ -47,18 +51,48 @@ class EndpointFactory(ClientFactory):
     def clientConnectionLost(self, conn, reason):
         print "connection lost"
         self.ec_bl.on_connection_lost(reason)
-        conn.connect()
+        self.connector = conn
+        Clock.schedule_once(self.try_reconnect_callback, 1)
 
     def clientConnectionFailed(self, conn, reason):
         print "connection failed"
         self.ec_bl.on_connection_failed(reason)
-        conn.connect()
+        self.connector = conn
+        Clock.schedule_once(self.try_reconnect_callback, 1)
 
     def connect_protocol(self, protocol):
         self.ec_bl.on_connection(protocol)
 
     def line_received(self, line):
         self.ec_bl.protocol_line_received(line)
+
+    def try_reconnect_callback(self, dt):
+        self.connector.connect()
+
+
+class EndpointRequest(object):
+
+    TIME_FORMAT = '%Y%m%d%H%M%S%f'
+    TIMEOUT = 15
+
+    def __init__(self, command, value):
+        self.command = command
+        self.value = value
+        self.time = datetime.datetime.utcnow().strftime(self.TIME_FORMAT)
+
+    @classmethod
+    def expire_requests(clk, requests_list):
+        new_requests = {}
+        threshold = (datetime.datetime.utcnow() -\
+            datetime.timedelta(seconds=clk.TIMEOUT)).strftime(clk.TIME_FORMAT)
+        for rq_id, request in requests_list.items():
+            if request.time < threshold:
+                Logger.warning("REQUEST TIMEOUT: ID {} COMMAND {} VALUE {}".\
+                        format(rq_id, request.command, request.value))
+            else:
+                new_requests[rq_id] = request
+
+        return new_requests
 
 
 #@TODO
@@ -77,6 +111,7 @@ class EndpointCommunicationBL(BoxLayout):
     selected_device = None
 
     rq_id = 1
+    requests_list = {}
 
     def __init__(self, *args, **kwargs):
         super(EndpointCommunicationBL, self).__init__(*args, **kwargs)
@@ -93,10 +128,12 @@ class EndpointCommunicationBL(BoxLayout):
     def on_connection_lost(self, reason):
         self.con_widget.update_status('RED', 'no connection')
         self.utility_lt.log_display(reason.getErrorMessage())
+        Clock.unschedule(self.send_healthcheck)
 
     def on_connection_failed(self, reason):
         self.con_widget.update_status('RED', 'no connection')
         self.utility_lt.log_display(reason.getErrorMessage())
+        Clock.unschedule(self.send_healthcheck)
 
     def protocol_line_received(self, line):
         print "line received: {}".format(line)
@@ -129,10 +166,12 @@ class EndpointCommunicationBL(BoxLayout):
         elif header == 'SE':
             #@TODO
             #handle error
+            Logger.warning("SERVER ERROR: {}".format(body))
             pass
         else:
             #@TODO
             #handle undefined command
+            Logger.warning("UNDEFINED COMMAND: {}".format(body))
             pass
 
     def save_available_endpoints(self, body):
@@ -152,21 +191,46 @@ class EndpointCommunicationBL(BoxLayout):
         self.protocol.sendLine('CD:' + device)
         self.selected_device = device
 
+        Clock.schedule_interval(self.send_healthcheck, 0.5)
+
+    def send_healthcheck(self, dt):
+        self.send_request(command=0, value=0)
+
+        self.requests_list = EndpointRequest.expire_requests(self.requests_list)
+
     def endpoint_request_received(self, request_body):
-        r_id, status, result = request_body.split(':')
+        rq_id, status, result = request_body.split(':')
+        rq_id = int(rq_id)
         if status > 0:
-            if r_id > 0:
-                self.process_success_response(r_id, result)
+            if rq_id > 0:
+                self.process_success_response(rq_id, result)
             else:
                 self.process_success_unbound_response(result)
         else:
-            if r_id > 0:
-                self.process_error_response(r_id, result)
+            if rq_id > 0:
+                self.process_error_response(rq_id, result)
             else:
                 self.process_error_unbound_response(result)
 
-    def endpoint_request_received(self,body):
-        print "endpoint request received: ", body
+    def process_success_response(self, rq_id, result):
+        request = self.requests_list.pop(rq_id, None)
+        if request is None:
+            Logger.warning("UNEXPECTED REQUEST: id: {}, result: {}".\
+                           format(rq_id, result))
+            return
+        if request.command == 0:
+            #update battery status
+            self.bat_widget.update_status('GREEN', result.split(',')[0] + ' V')
+            #update roundtrip status
+
+            pass
+
+    def process_success_unbound_response(self, result):
+        Logger.warning("UNBOUND SUCCESS REQUEST: result: {}".format(result))
+    def process_error_response(self, rq_id, result):
+        Logger.warning("ERROR REQUEST: id: {}, result: {}".format(rq_id, result))
+    def process_error_unbound_response(self, result):
+        Logger.warning("UNBOUND ERROR REQUEST: result: {}".format(result))
 
     def command_wheel(self, value):
         print "command wheel value: {}".format(value)
@@ -174,7 +238,7 @@ class EndpointCommunicationBL(BoxLayout):
         value += 100
         value *= 1024/200
 
-        self.protocol.sendLine('RE:1:{}:{}'.format(int(value), self.get_rq_id()))
+        self.send_request(command=1, value=value)
 
     def command_accell(self, value):
         print "command accell value: {}".format(value)
@@ -182,15 +246,37 @@ class EndpointCommunicationBL(BoxLayout):
         value += 100
         value /= 2
 
-        self.protocol.sendLine('RE:2:{}:{}'.format(int(value), self.get_rq_id()))
+        self.send_request(command=2, value=value)
 
     def get_rq_id(self):
         self.rq_id += 1
         return self.rq_id
 
+    def send_request(self, command, value):
+        rq_id = self.get_rq_id()
+
+        self.requests_list[rq_id] = EndpointRequest(command, value)
+
+        body = 'RE:{}:{}:{}'.format(command, int(value), rq_id)
+        self.protocol.sendLine(body)
+
 
 class StatusBL(BoxLayout):
-    pass
+
+    def update_status(self, color, status_msg):
+        with self.canvas.before:
+            if color.upper() == 'RED':
+                Color(0.5, 0, 0, mode='rgba')
+            if color.upper() == 'GREEN':
+                Color(0, 0.5, 0, mode='rgba')
+            if color.upper() == 'YELLOW':
+                Color(0.9, 0.7, 0, mode='rgba')
+            Rectangle(
+                pos=[self.x, self.y],
+                size=[self.width, self.height]
+            )
+
+        self.label.text = status_msg
 
 
 class CommandSenderBL(BoxLayout):
