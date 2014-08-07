@@ -23,6 +23,14 @@ from twisted.protocols.basic import LineReceiver
 from twisted.internet.protocol import ClientFactory
 
 
+#@TODO
+"""
+-handle utf-8 comming from endpoint (arduino sends giberish)
+-add form to set connection params before connecting
+-button to disconnect from device/server
+"""
+
+
 DRIVING_WHEEL_MAX = 100
 ACCELLERATOR_MAX = 100
 
@@ -39,6 +47,10 @@ class EndpointClient(LineReceiver):
     def lineReceived(self, line):
         self.factory.line_received(line)
 
+    def sendLine(self, line):
+        # super(EndpointClient, self).sendLine(line)
+        LineReceiver.sendLine(self, line)
+        Logger.info("Line sent: {}".format(line))
 
 
 class EndpointFactory(ClientFactory):
@@ -95,11 +107,6 @@ class EndpointRequest(object):
         return new_requests
 
 
-#@TODO
-"""
--healthcheck request
--battery status
-"""
 class EndpointCommunicationBL(BoxLayout):
 
     con_widget = ObjectProperty(None)
@@ -128,26 +135,33 @@ class EndpointCommunicationBL(BoxLayout):
     def on_connection_lost(self, reason):
         self.con_widget.update_status('RED', 'no connection')
         self.utility_lt.log_display(reason.getErrorMessage())
+        self.enpoint_is_connected = False
         Clock.unschedule(self.send_healthcheck)
 
     def on_connection_failed(self, reason):
         self.con_widget.update_status('RED', 'no connection')
         self.utility_lt.log_display(reason.getErrorMessage())
+        self.enpoint_is_connected = False
         Clock.unschedule(self.send_healthcheck)
 
+    def on_device_disconnected(self):
+        self.enpoint_is_connected = False
+        Clock.unschedule(self.send_healthcheck)
+        self.con_widget.update_status('YELLOW', 'server connected')
+        self.endpoint_connecting_process()
+
     def protocol_line_received(self, line):
-        print "line received: {}".format(line)
+        Logger.info("Line received: {}".format(line))
 
         header = line[:2]
         body = line[3:]
 
         if header == 'DL':
-            #@TODO
-            #handle available devices list
+            self.save_available_endpoints(body)
             if self.enpoint_is_connected:
-                self.save_available_endpoints(body)
+                pass
             else:
-                self.enpoint_connecting_process(body)
+                self.endpoint_connecting_process()
 
         elif header == 'CD':
             if body == 'OK':
@@ -155,12 +169,10 @@ class EndpointCommunicationBL(BoxLayout):
                 self.utility_lt.reset()
                 self.con_widget.update_status('GREEN', self.selected_device)
             else:
-                self.con_widget.update_status('RED', body)
+                self.on_device_disconnected()
 
         elif header == 'DD':
-            #@TODO
-            #handle device disconected
-            pass
+            self.on_device_disconnected()
         elif header == 'RE':
             self.endpoint_request_received(body)
         elif header == 'SE':
@@ -180,9 +192,7 @@ class EndpointCommunicationBL(BoxLayout):
         else:
             self.available_endpoints = []
 
-    def enpoint_connecting_process(self, body):
-
-        self.save_available_endpoints(body)
+    def endpoint_connecting_process(self):
         self.utility_lt.connecting_endpoint(
             self.available_endpoints, self.on_select_device
         )
@@ -194,8 +204,11 @@ class EndpointCommunicationBL(BoxLayout):
         Clock.schedule_interval(self.send_healthcheck, 0.5)
 
     def send_healthcheck(self, dt):
-        self.send_request(command=0, value=0)
 
+        if self.enpoint_is_connected == False:
+            return False
+
+        self.send_request(command=0, value=0)
         self.requests_list = EndpointRequest.expire_requests(self.requests_list)
 
     def endpoint_request_received(self, request_body):
